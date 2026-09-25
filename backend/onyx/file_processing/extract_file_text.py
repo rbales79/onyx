@@ -7,6 +7,9 @@ import re
 import tempfile
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
+from email.header import decode_header
+from email.header import make_header
+from email.message import Message
 from email.parser import Parser as EmailParser
 from io import BytesIO
 from pathlib import Path
@@ -719,6 +722,33 @@ def xlsx_to_text(file: IO[Any], file_name: str = "") -> str:
     )
 
 
+ENVELOPE_HEADER_FIELDS = ("From", "To", "Cc", "Date", "Subject")
+
+
+def _envelope_headers(message: Message) -> str:
+    """The message's own headers, decoded, one field per line.
+
+    Without these the only ``From:`` an extracted email can contain is body text: the quoted
+    header block of an earlier message in the thread. The nearest sender to a sentence is then
+    the wrong one, which is worse than having no sender at all.
+    """
+    lines: list[str] = []
+    for field in ENVELOPE_HEADER_FIELDS:
+        raw = message.get(field)
+        if not raw:
+            continue
+        try:
+            # RFC 2047 encoded-words are common in real mail and index as mojibake undecoded.
+            value = str(make_header(decode_header(raw)))
+        except Exception:
+            value = str(raw)
+        # Folded headers arrive with embedded newlines, which would break one field per line.
+        value = " ".join(value.split())
+        if value:
+            lines.append(f"{field}: {value}")
+    return "\n".join(lines)
+
+
 def eml_to_text(file: IO[Any]) -> str:
     encoding = detect_encoding(file)
     text_file = io.TextIOWrapper(file, encoding=encoding)
@@ -750,6 +780,10 @@ def eml_to_text(file: IO[Any]) -> str:
                 text_content.extend(item for item in payload if isinstance(item, str))
             else:
                 logger.warning("Unexpected payload type: %s", type(payload))
+    envelope = _envelope_headers(message)
+    if envelope:
+        text_content = [envelope] + text_content
+
     return TEXT_SECTION_SEPARATOR.join(text_content)
 
 
