@@ -87,6 +87,9 @@ class OnyxFileExtensions:
         ".eml",
         ".epub",
         ".html",
+        # a DOCUMENT, not plain text: PLAIN_TEXT_EXTENSIONS short-circuits to
+        # the verbatim reader, which would index cue numbers and timings
+        ".vtt",
     } | SPREADSHEET_EXTENSIONS
     IMAGE_EXTENSIONS = {
         ".png",

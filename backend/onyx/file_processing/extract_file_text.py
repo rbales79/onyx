@@ -31,6 +31,7 @@ from onyx.file_processing.file_types import (
     OnyxMimeTypes,
 )
 from onyx.file_processing.html_utils import parse_html_page_basic
+from onyx.file_processing.webvtt import parse_vtt_transcript
 from onyx.file_processing.pdf_image_utils import iter_pdf_extracted_images
 from onyx.file_processing.unstructured import (
     get_unstructured_api_key,
@@ -753,6 +754,22 @@ def eml_to_text(file: IO[Any]) -> str:
     return TEXT_SECTION_SEPARATOR.join(text_content)
 
 
+def vtt_to_text(file: IO[Any]) -> str:
+    """A WebVTT transcript, read as cues rather than verbatim.
+
+    ``keep_speakers`` is right for a file that arrives without a connector to
+    say where it came from: Teams names its speaker in a voice span, which is
+    otherwise dropped, and Zoom writes "Jane Doe: " into the cue text, where
+    the flag changes nothing.
+    """
+    encoding = detect_encoding(file)
+    file.seek(0)
+    content = file.read()
+    if isinstance(content, bytes):
+        content = content.decode(encoding, errors="replace")
+    return parse_vtt_transcript(content, keep_speakers=True)
+
+
 def epub_to_text(file: IO[Any]) -> str:
     with zipfile.ZipFile(file) as epub:
         assert_zip_within_limits(epub)
@@ -823,6 +840,7 @@ def extract_file_text_locally(
         # openpyxl reads macro-enabled workbooks like any other.
         ".xlsm": lambda f: xlsx_to_text(f, file_name),
         ".eml": eml_to_text,
+        ".vtt": vtt_to_text,
         ".epub": epub_to_text,
         ".html": parse_html_page_basic,
     }
@@ -979,6 +997,11 @@ def _extract_text_and_images(
         if extension == ".eml":
             return ExtractionResult(
                 text_content=eml_to_text(file), embedded_images=[], metadata={}
+            )
+
+        if extension == ".vtt":
+            return ExtractionResult(
+                text_content=vtt_to_text(file), embedded_images=[], metadata={}
             )
 
         if extension == ".epub":
