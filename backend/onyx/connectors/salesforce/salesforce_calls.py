@@ -173,11 +173,21 @@ def get_object_by_id_queries(
 
 def _child_window_selection(queryable_fields: set[str]) -> str:
     # newest children first so a recently changed child makes the window, with
-    # Id as tiebreaker so the order is total
+    # Id as tiebreaker so the order is total.
+    #
+    # NULLS LAST is not a preference. SOQL's DESC defaults to NULLS FIRST and
+    # some entities reject that outright -- "Descending sort with NULLS FIRST
+    # is not supported for this entity. Set it to DESC NULLS LAST."
+    # (UNSUPPORTED_QUERY). Pinning it costs nothing on the rows that matter:
+    # LastModifiedDate, CreatedDate and Id are populated on every row that
+    # exists, so no real child can be displaced from the window.
     for field in (MODIFIED_FIELD, CREATED_FIELD):
         if field in queryable_fields:
-            return f"ORDER BY {field} DESC, {ID_FIELD} DESC LIMIT {SOQL_SUBQUERY_ROW_LIMIT}"
-    return f"ORDER BY {ID_FIELD} DESC LIMIT {SOQL_SUBQUERY_ROW_LIMIT}"
+            return (
+                f"ORDER BY {field} DESC NULLS LAST, {ID_FIELD} DESC NULLS LAST "
+                f"LIMIT {SOQL_SUBQUERY_ROW_LIMIT}"
+            )
+    return f"ORDER BY {ID_FIELD} DESC NULLS LAST LIMIT {SOQL_SUBQUERY_ROW_LIMIT}"
 
 
 def _child_ids_selection(ids: list[str]) -> str:
@@ -216,12 +226,22 @@ def _child_subquery_overhead(
     )
 
 
+def _pack_subquery_groups(
+    subqueries: list[str], budget: int
+) -> list[list[str]]:
+    return _pack_for_url(
+        subqueries, SOQL_FIELD_SEPARATOR, budget, SOQL_MAX_SUBQUERIES
+    )
+
+
+def _join_subqueries(group: list[str], suffix: str) -> str:
+    return SOQL_SELECT_PREFIX + SOQL_FIELD_SEPARATOR.join(group) + suffix
+
+
 def _pack_subqueries(subqueries: list[str], budget: int, suffix: str) -> list[str]:
     return [
-        SOQL_SELECT_PREFIX + SOQL_FIELD_SEPARATOR.join(group) + suffix
-        for group in _pack_for_url(
-            subqueries, SOQL_FIELD_SEPARATOR, budget, SOQL_MAX_SUBQUERIES
-        )
+        _join_subqueries(group, suffix)
+        for group in _pack_subquery_groups(subqueries, budget)
     ]
 
 
@@ -237,6 +257,7 @@ def plan_child_queries(
     budget = _field_budget(suffix)
 
     window_subqueries: list[str] = []
+    relationship_of: dict[str, str] = {}
     remaining_chunks: dict[str, list[list[str]]] = {}
     for child_relationship in child_relationships:
         queryable_fields = relationships_to_fields[child_relationship]
@@ -245,19 +266,23 @@ def plan_child_queries(
         first_chunk, *rest = _pack_for_url(
             fields, SOQL_FIELD_SEPARATOR, budget - overhead
         ) or [[]]
-        window_subqueries.append(
-            _make_child_subquery(
-                child_relationship,
-                [ID_FIELD, *first_chunk],
-                _child_window_selection(queryable_fields),
-            )
+        subquery = _make_child_subquery(
+            child_relationship,
+            [ID_FIELD, *first_chunk],
+            _child_window_selection(queryable_fields),
         )
+        window_subqueries.append(subquery)
+        relationship_of[subquery] = child_relationship
         if rest:
             remaining_chunks[child_relationship] = rest
 
+    groups = _pack_subquery_groups(window_subqueries, budget)
     return SalesforceChildQueryPlan(
-        window_queries=_pack_subqueries(window_subqueries, budget, suffix),
+        window_queries=[_join_subqueries(group, suffix) for group in groups],
         remaining_chunks=remaining_chunks,
+        window_relationships=[
+            [relationship_of[subquery] for subquery in group] for group in groups
+        ],
     )
 
 

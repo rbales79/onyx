@@ -7,6 +7,7 @@ from requests import Response
 from requests.adapters import HTTPAdapter
 from simple_salesforce import Salesforce, SFType
 from simple_salesforce.api import exception_handler
+from simple_salesforce.exceptions import SalesforceError
 from simple_salesforce.exceptions import SalesforceRefusedRequest
 from typing_extensions import override
 from urllib3.util.retry import Retry
@@ -275,9 +276,18 @@ class OnyxSalesforce(Salesforce):
         plan = plan_child_queries(
             object_id, sf_type, relationships, relationships_to_fields
         )
-        for query in plan.window_queries:
-            for relationship, child_id in self._merge_child_rows(
-                query, child_records, chunks_seen
+        for query, packed in zip(
+            plan.window_queries,
+            plan.window_relationships or [[] for _ in plan.window_queries],
+        ):
+            for relationship, child_id in self._window_rows(
+                object_id,
+                sf_type,
+                query,
+                packed,
+                relationships_to_fields,
+                child_records,
+                chunks_seen,
             ):
                 ids_by_relationship.setdefault(relationship, []).append(child_id)
 
@@ -297,6 +307,60 @@ class OnyxSalesforce(Salesforce):
                 del child_records[key]
 
         return child_records
+
+    def _window_rows(
+        self,
+        object_id: str,
+        sf_type: str,
+        query: str,
+        packed_relationships: list[str],
+        relationships_to_fields: dict[str, set[str]],
+        child_records: dict[str, dict[str, Any]],
+        chunks_seen: dict[str, int],
+    ) -> list[tuple[str, str]]:
+        """One window query, and a per-relationship retry if Salesforce rejects
+        it. A rejection applies to the STATEMENT, so several relationships are
+        refused because of one. Re-planning them singly keeps the ones that are
+        fine; only a relationship that fails alone is dropped, by name."""
+        try:
+            return self._merge_child_rows(query, child_records, chunks_seen)
+        except SalesforceError:
+            if len(packed_relationships) < 2:
+                logger.warning(
+                    "Dropping child relationship %s on %s: rejected alone",
+                    packed_relationships or ["<unknown>"],
+                    sf_type,
+                )
+                return []
+            logger.warning(
+                "Re-planning %d child relationships on %s singly after a "
+                "rejected statement",
+                len(packed_relationships),
+                sf_type,
+            )
+
+        merged: list[tuple[str, str]] = []
+        for relationship in packed_relationships:
+            single = plan_child_queries(
+                object_id,
+                sf_type,
+                [relationship],
+                {relationship: relationships_to_fields[relationship]},
+            )
+            for single_query in single.window_queries:
+                try:
+                    merged.extend(
+                        self._merge_child_rows(
+                            single_query, child_records, chunks_seen
+                        )
+                    )
+                except SalesforceError:
+                    logger.warning(
+                        "Dropping child relationship %s on %s: rejected alone",
+                        relationship,
+                        sf_type,
+                    )
+        return merged
 
     def _merge_child_rows(
         self,

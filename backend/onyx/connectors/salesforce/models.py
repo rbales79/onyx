@@ -144,6 +144,10 @@ class SalesforceChildQueryPlan(BaseModel):
 
     window_queries: list[str]
     remaining_chunks: dict[str, list[list[str]]]
+    # the relationships packed into window_queries[i]. Salesforce rejects a
+    # whole statement, not a subquery, so recovering from a rejection means
+    # knowing what rode with it.
+    window_relationships: list[list[str]] = []
 
 
 def parse_salesforce_credentials(credentials: dict[str, Any]) -> SalesforceCredentials:

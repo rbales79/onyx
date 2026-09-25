@@ -174,7 +174,7 @@ class TestChildQueryPlanning:
             _ACCOUNT_ID, "Account", ["Notes"], {"Notes": {ID_FIELD}}
         )
         assert plan.window_queries == [
-            "SELECT (SELECT Id FROM Notes ORDER BY Id DESC LIMIT 10) "
+            "SELECT (SELECT Id FROM Notes ORDER BY Id DESC NULLS LAST LIMIT 10) "
             f"FROM Account WHERE Id = '{_ACCOUNT_ID}'"
         ]
         assert plan.remaining_chunks == {}
@@ -184,13 +184,15 @@ class TestChildQueryPlanning:
         [
             (
                 {ID_FIELD, "Name", CREATED_FIELD, MODIFIED_FIELD},
-                f"ORDER BY {MODIFIED_FIELD} DESC, {ID_FIELD} DESC LIMIT 10",
+                f"ORDER BY {MODIFIED_FIELD} DESC NULLS LAST, "
+                f"{ID_FIELD} DESC NULLS LAST LIMIT 10",
             ),
             (
                 {ID_FIELD, CREATED_FIELD},
-                f"ORDER BY {CREATED_FIELD} DESC, {ID_FIELD} DESC LIMIT 10",
+                f"ORDER BY {CREATED_FIELD} DESC NULLS LAST, "
+                f"{ID_FIELD} DESC NULLS LAST LIMIT 10",
             ),
-            ({ID_FIELD, "Name"}, f"ORDER BY {ID_FIELD} DESC LIMIT 10"),
+            ({ID_FIELD, "Name"}, f"ORDER BY {ID_FIELD} DESC NULLS LAST LIMIT 10"),
         ],
     )
     def test_window_orders_by_recency_with_id_tiebreaker(
